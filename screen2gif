@@ -1,0 +1,266 @@
+#!/bin/bash
+
+ffmpeg_with_progress() {
+  local input_file="$1"
+  shift
+  
+  # Get video duration in seconds
+  local duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$input_file" 2>/dev/null)
+  
+  if [[ -z "$duration" ]] || [[ "$duration" == "N/A" ]]; then
+    # Fallback to regular ffmpeg if duration can't be determined
+    ffmpeg -i "$input_file" "$@" 2>/dev/null
+    return $?
+  fi
+  
+  local temp_log=$(mktemp)
+  
+  # Run ffmpeg in background with progress logging
+  ffmpeg -i "$input_file" -progress "$temp_log" -nostats "$@" 2>/dev/null &
+  local ffmpeg_pid=$!
+  
+  # Monitor progress
+  echo "Processing: $(basename "$input_file")"
+  local last_time=0
+  while kill -0 $ffmpeg_pid 2>/dev/null; do
+    if [[ -f "$temp_log" ]]; then
+      local current_time=$(tail -n 10 "$temp_log" | grep "out_time_us" | tail -1 | cut -d'=' -f2)
+      if [[ -n "$current_time" ]] && [[ "$current_time" != "N/A" ]]; then
+        current_time=$((current_time / 1000000))
+        if [[ $current_time -gt $last_time ]]; then
+          local progress=$((current_time * 100 / ${duration%.*}))
+          if [[ $progress -gt 100 ]]; then progress=100; fi
+          
+          # Create progress bar
+          local bar_width=40
+          local filled_width=$((progress * bar_width / 100))
+          local empty_width=$((bar_width - filled_width))
+          
+          printf "\r["
+          printf "%0.s█" $(seq 1 $filled_width)
+          printf "%0.s░" $(seq 1 $empty_width)
+          printf "] %3d%% (%ds/%ds)" "$progress" "$current_time" "${duration%.*}"
+          
+          last_time=$current_time
+        fi
+      fi
+    fi
+    sleep 0.5
+  done
+  
+  # Wait for ffmpeg to finish and get exit code
+  wait $ffmpeg_pid
+  local exit_code=$?
+  
+  # Clean up
+  rm -f "$temp_log"
+  
+  if [[ $exit_code -eq 0 ]]; then
+    printf "\r["
+    printf "%0.s█" $(seq 1 40)
+    printf "] 100%% - Complete!\n"
+  else
+    printf "\nError occurred during processing.\n"
+  fi
+  
+  return $exit_code
+}
+
+video2gif() {
+  local input_file="${1}"
+  local output_file="${2}"
+  local fps="${3:-10}"
+  local scale="${4:-1920}"
+  local replace="${5:-false}"
+  
+  # Prepare ffmpeg flags
+  local ffmpeg_flags=""
+  if [[ "$replace" == "true" ]]; then
+    ffmpeg_flags="-y"
+    echo "Replacing existing file: ${output_file}.gif"
+  elif [[ -f "${output_file}.gif" ]]; then
+    echo "Error: Output file '${output_file}.gif' already exists." >&2
+    echo "Use --replace or -r flag to overwrite existing files." >&2
+    return 1
+  fi
+  
+  ffmpeg_with_progress "${input_file}" \
+    $ffmpeg_flags \
+    -vf "fps=${fps},scale=${scale}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+    -loop 0 "${output_file}".gif
+}
+
+screen2gif() {
+  local fileName="${1}"
+  local fps="${2:-10}"
+  local scale="${3:-1920}"
+  local replace="${4:-false}"
+  local keycast="${5:-false}"
+  
+  # Check if output file exists and handle accordingly
+  if [[ -f "${fileName}.gif" ]]; then
+    if [[ "$replace" == "false" ]]; then
+      echo "Error: Output file '${fileName}.gif' already exists." >&2
+      echo "Use --replace or -r flag to overwrite existing files." >&2
+      return 1
+    fi
+  fi
+  
+  # Check if keycastr-cli is available when keycast is enabled
+  if [[ "$keycast" == "true" ]]; then
+    if ! command -v keycastr-cli &> /dev/null; then
+      echo "Error: keycastr-cli not found. Install it from:" >&2
+      echo "https://github.com/bad-noodles/keycastr-cli" >&2
+      echo "" >&2
+      echo "Also requires KeyCastr app. Install it with:" >&2
+      echo "brew install --cask keycastr" >&2
+      return 1
+    fi
+    
+    # Start keystroke capture
+    echo "Enabling keystroke capture..."
+    keycastr-cli open
+    keycastr-cli start
+    
+    if [[ $? -eq 0 ]]; then
+      echo "✓ KeyCastr is now capturing keystrokes"
+    else
+      echo "⚠ Warning: Failed to start KeyCastr capture" >&2
+      echo "KeyCastr may already be capturing or require manual setup" >&2
+    fi
+  fi
+  
+  # Get timestamp before recording to identify the new file
+  local timestamp_before=$(date +%s)
+  
+  screencapture -viU any.mov
+  
+  # Stop keycastr if it was started
+  if [[ "$keycast" == "true" ]]; then
+    echo "Stopping keystroke capture..."
+    keycastr-cli stop
+    
+    if [[ $? -eq 0 ]]; then
+      echo "✓ KeyCastr capture stopped"
+    else
+      echo "⚠ Warning: Failed to stop KeyCastr capture" >&2
+    fi
+  fi
+  
+  # Find the newest .mov file on Desktop created after recording started
+  local actual_video=$(ls -t ~/Desktop/*.mov 2>/dev/null | while read file; do
+    if [[ $(stat -f %m "$file" 2>/dev/null) -gt $timestamp_before ]]; then
+      echo "$file"
+      break
+    fi
+  done)
+  
+  # Check if recording was successful
+  if [[ -z "$actual_video" ]]; then
+    echo "Error: Screen recording failed or was cancelled. No .mov file found on Desktop." >&2
+    return 1
+  fi
+  
+  echo "Found recording: $(basename "$actual_video")"
+  
+  # Convert to GIF
+  video2gif "$actual_video" "$fileName" "$fps" "$scale" "$replace"
+  local conversion_result=$?
+  
+  # Clean up the Desktop recording file
+  rm -f "$actual_video"
+  
+  return $conversion_result
+}
+
+
+show_help() {
+  cat << EOF
+screen2gif - Record screen and convert to GIF
+
+Usage: screen2gif [OPTIONS] <filename>
+
+Arguments:
+  filename          Output filename (without .gif extension)
+
+Options:
+  -f, --fps FPS     Frames per second (default: 10)
+  -s, --scale SIZE  Scale width in pixels (default: 1920)
+  -r, --replace     Replace existing output file if it exists
+  -k, --keycast     Enable keystroke capture overlay using keycastr-cli
+  -h, --help        Show this help message
+
+Examples:
+  screen2gif demo                    # demo.gif at 10fps, 1920px wide
+  screen2gif -f 15 demo              # demo.gif at 15fps, 1920px wide  
+  screen2gif -f 15 -s 1080 demo      # demo.gif at 15fps, 1080px wide
+  screen2gif --fps 20 --scale 720 demo  # demo.gif at 20fps, 720px wide
+  screen2gif -r demo                 # Replace demo.gif if it exists
+  screen2gif -k demo                 # Record with keystroke overlay
+  screen2gif -k -f 15 -s 1080 demo   # Keystrokes + 15fps + 1080px wide
+
+Requirements for keystroke capture:
+  1. Install KeyCastr: brew install --cask keycastr
+  2. Install keycastr-cli: https://github.com/bad-noodles/keycastr-cli
+
+EOF
+}
+
+parse_args() {
+  fps=10
+  scale=1920
+  filename=""
+  replace=false
+  keycast=false
+  
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -f|--fps)
+        fps="$2"
+        shift 2
+        ;;
+      -s|--scale)
+        scale="$2"
+        shift 2
+        ;;
+      -r|--replace)
+        replace=true
+        shift
+        ;;
+      -k|--keycast)
+        keycast=true
+        shift
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -*)
+        echo "Unknown option $1" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$filename" ]]; then
+          filename="$1"
+        else
+          echo "Too many arguments" >&2
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+  
+  if [[ -z "$filename" ]]; then
+    echo "Error: filename is required" >&2
+    echo "Use -h or --help for usage information" >&2
+    exit 1
+  fi
+}
+
+
+# Execute screen2gif when script is called directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  parse_args "$@"
+  screen2gif "$filename" "$fps" "$scale" "$replace" "$keycast"
+fi

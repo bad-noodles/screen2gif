@@ -1,0 +1,19 @@
+#compdef screen2gif
+
+# Zsh completion for screen2gif
+_screen2gif() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(-f --fps)'{-f,--fps}'[frames per second (default: 10)]:fps:(5 10 15 20 24 30 60)' \
+        '(-s --scale)'{-s,--scale}'[scale width in pixels (default: 1920)]:width:(640 720 1080 1280 1920 2560 3840)' \
+        '(-r --replace)'{-r,--replace}'[replace existing output file if it exists]' \
+        '(-h --help)'{-h,--help}'[show help message]' \
+        '1:filename:_files -g "*.gif(-N)" -X "Specify output filename (without .gif extension)"' \
+        && return 0
+
+    return 1
+}
+
+_screen2gif "$@"
