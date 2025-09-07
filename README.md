@@ -15,23 +15,11 @@ A macOS command-line tool that records your screen and converts it to a high-qua
 - macOS (uses `screencapture`)
 - FFmpeg (for video conversion)
 
-Install FFmpeg via Homebrew:
-
-```bash
-brew install ffmpeg
-```
-
 ## Installation
 
-1. Clone or download this repository
-2. Make the script executable:
-   ```bash
-   chmod +x screen2gif
-   ```
-3. Optionally, add to your PATH for global access:
-   ```bash
-   sudo cp screen2gif /usr/local/bin/
-   ```
+```bash
+brew install bad-noodles/bad-noodles/screen2gif
+```
 
 ## Usage
 

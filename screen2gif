@@ -201,7 +201,7 @@ Examples:
 
 Requirements for keystroke capture:
   1. Install KeyCastr: brew install --cask keycastr
-  2. Install keycastr-cli: https://github.com/bad-noodles/keycastr-cli
+  2. Install keycastr-cli: brew install bad-noodles/bad-noodles/keycastr-cli
 
 EOF
 }
